@@ -1,26 +1,63 @@
 # a50x-balance-lock
 
-Bloquea el balance juego/chat de los **Logitech G / Astro A50 X** en Windows. Los botones del auricular derecho se pulsan fácilmente sin querer y dejas de oír el juego o el chat, y G HUB no permite desactivarlos. Este programa escucha el casco por USB y, en cuanto el balance se mueve, lo devuelve al valor que elijas (por defecto, el centro) en menos de 100 ms.
+Lock the game/chat balance of the **Logitech G / Astro A50 X** headset on Windows.
 
-## Requisitos
+The A50 X has two game/chat balance buttons on the back of the right ear cup. They are easy to press by accident, which suddenly fades out the game or the chat, and Logitech G HUB offers no setting to disable them. This tool listens to the headset over USB and, whenever the balance moves, sets it straight back to the value you chose (centre by default) in under 100 ms.
 
-- Windows 10/11 con el A50 X conectado por USB (base o adaptador).
-- [uv](https://docs.astral.sh/uv/). Instala Python y `hidapi` solo la primera vez que se ejecuta.
-- G HUB puede seguir abierto: los dos comparten el dispositivo sin conflicto.
+## Features
 
-## Uso
+- Reverts any balance change from the ear-cup buttons in under 100 ms.
+- Small settings window to pick the locked balance (0 = all chat, 12 = all game) or turn the lock off.
+- Settings apply instantly; no restart needed.
+- Survives the headset being switched off or the base station being unplugged, and reapplies the balance on reconnect.
+- Runs alongside G HUB; both share the device without conflict.
+- No admin rights, no drivers, no background service beyond a scheduled task.
+
+## Requirements
+
+- Windows 10 or 11.
+- Astro A50 X connected over USB (base station or USB adapter).
+- [uv](https://docs.astral.sh/uv/getting-started/installation/). On first run it fetches Python and the `hidapi` package automatically.
+
+## Quick start
 
 ```powershell
-# Bloqueo (deja una consola abierta; uvw lo ejecuta sin ventana)
-uv run --script a50x_balance_lock.py
+git clone https://github.com/pabloski2300/a50x-balance-lock.git
+cd a50x-balance-lock
 
-# Ventana de ajustes: balance de 0 (todo chat) a 12 (todo juego) y activar o desactivar el bloqueo
+# Start the lock (keeps a console window open; see below to run it hidden at logon)
+uv run --script a50x_balance_lock.py
+```
+
+Press either balance button on the headset: the audio should stay put. Every correction is logged to `a50x_balance_lock.log`.
+
+## Settings window
+
+```powershell
 uv run --script ajustes.py
 ```
 
-Los ajustes se guardan en `config.json` y el bloqueo los aplica al momento, sin reiniciar. Cada corrección queda registrada en `a50x_balance_lock.log`.
+The window lets you:
 
-### Arranque automático al iniciar sesión
+- Choose the locked balance with a slider, from **0 (all chat)** to **12 (all game)**; **6** is the centre, with both at full volume.
+- Turn the button lock on or off without stopping anything.
+
+Click **Guardar** (Save) and the running lock applies the change within a second. The window's labels are in Spanish: *Chat* / *Juego* (game), *Centrar* (centre), *Guardar* (save), *Bloquear los botones del casco* (lock the headset buttons).
+
+Settings are stored in `config.json` next to the scripts:
+
+```json
+{
+  "target": 6,
+  "enabled": true
+}
+```
+
+If the file is missing, the lock defaults to the centre (6) and is enabled.
+
+## Run automatically at logon
+
+Create a scheduled task that starts the lock hidden (via `uvw`) every time you sign in, and restarts it if it ever crashes. Run this in PowerShell from the repository folder; no admin rights are required:
 
 ```powershell
 $dir = (Resolve-Path .).Path
@@ -29,24 +66,51 @@ $action = New-ScheduledTaskAction -Execute $uvw -Argument "run --script `"$dir\a
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName 'A50X Balance Lock' -Action $action -Trigger $trigger -Settings $settings
+Start-ScheduledTask -TaskName 'A50X Balance Lock'
 ```
 
-Para quitarlo: `Unregister-ScheduledTask -TaskName 'A50X Balance Lock'`.
+To remove it:
 
-> Mientras el bloqueo esté activo, el control de balance de G HUB también se revierte. Para usarlo, desmarca el bloqueo en la ventana de ajustes.
+```powershell
+Unregister-ScheduledTask -TaskName 'A50X Balance Lock' -Confirm:$false
+```
 
-## Protocolo
+Optionally, add a Start menu shortcut for the settings window:
 
-Se obtuvo capturando con Frida lo que `lghub_agent.exe` escribe en el casco. Interfaz HID `VID 046D / PID 0B0B`, interfaz 8, página de uso `0xFF32`, informe `0x02` de 64 bytes:
+```powershell
+$s = (New-Object -ComObject WScript.Shell).CreateShortcut("$([Environment]::GetFolderPath('Programs'))\A50 X Balance.lnk")
+$s.TargetPath = (Get-Command uvw).Source
+$s.Arguments = "run --script `"$((Resolve-Path .\ajustes.py).Path)`""
+$s.WorkingDirectory = (Resolve-Path .).Path
+$s.Save()
+```
 
-| Dirección | Bytes | Significado |
+## Good to know
+
+- While the lock is enabled, the balance slider in G HUB is reverted too. To use it, turn the lock off in the settings window.
+- Pressing both buttons at once makes the headset step the balance back and forth, which sounds choppy. With the lock enabled, that is corrected immediately.
+- Tested on the A50 X (USB product ID `0B0B`) on Windows 11. Other Astro models use different hardware and protocols and are not supported.
+
+## How it works
+
+The protocol was found by hooking `lghub_agent.exe` with [Frida](https://frida.re/) and recording what G HUB writes to the headset when the balance slider moves.
+
+The A50 X exposes a single vendor-defined HID collection: VID `046D`, PID `0B0B`, interface 8, usage page `0xFF32`. It uses report ID `0x02`, with 64-byte reports in both directions:
+
+| Direction | Bytes | Meaning |
 |---|---|---|
-| PC → casco | `02 0c 04 00 0a 1b VV` | Fijar el balance a `VV` |
-| casco → PC | `02 0c 03 00 0a 1b` | Confirmación |
-| casco → PC | `02 0c 04 00 0a 00 VV` | El balance ha cambiado a `VV` |
+| PC → headset | `02 0c 04 00 0a 1b VV` | Set the balance to `VV` |
+| headset → PC | `02 0c 03 00 0a 1b` | Acknowledgement |
+| headset → PC | `02 0c 04 00 0a 00 VV` | The balance changed to `VV` |
 
-`VV` va de `0x00` (todo chat) a `0x0c` (todo juego); el centro es `0x06`. El botón delantero (Chat) baja el valor y el trasero (Juego) lo sube.
+`VV` ranges from `0x00` (all chat) to `0x0c` (all game), with `0x06` as the centre. On the headset, the front button (chat) lowers the value and the rear button (game) raises it. Reports are zero-padded to 64 bytes.
 
-## Licencia
+The lock reads these change notifications and answers any value other than the target with a *set balance* command.
 
-MIT
+## Disclaimer
+
+This is an unofficial project, not affiliated with or endorsed by Logitech or Astro Gaming. It only sends the same command G HUB itself sends, but use it at your own risk.
+
+## License
+
+[MIT](LICENSE)
